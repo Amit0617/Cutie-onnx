@@ -9,6 +9,7 @@ output
 pretrained/
 workspace
 workspace/
+build_nuitka_onnx/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
