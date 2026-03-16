@@ -2,11 +2,41 @@ name: Export Nuitka ONNX Bundle
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to create or update for this release
+        required: true
+      release_name:
+        description: Release title
+        required: false
+        default: Cutie ONNX Nuitka Bundle
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
 
 jobs:
-  build-nuitka-onnx:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+  build-native:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: ubuntu
+            runner: ubuntu-latest
+            archive_name: cutie-onnx-nuitka-ubuntu.zip
+          - label: windows
+            runner: windows-latest
+            archive_name: cutie-onnx-nuitka-windows.zip
+          - label: macos
+            runner: macos-latest
+            archive_name: cutie-onnx-nuitka-macos.zip
 
     steps:
       - name: Check out repository
@@ -19,75 +49,197 @@ jobs:
           cache: pip
 
       - name: Install system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            patchelf
+          sudo apt-get install -y build-essential patchelf
 
       - name: Create virtual environment
-        run: python -m venv venv
+        shell: pwsh
+        run: |
+          python -m venv venv
+          if ($env:RUNNER_OS -eq "Windows") {
+            "PYTHON_BIN=$pwd/venv/Scripts/python.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "PIP_BIN=$pwd/venv/Scripts/pip.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            "PYTHON_BIN=$pwd/venv/bin/python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "PIP_BIN=$pwd/venv/bin/pip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
 
       - name: Install Python dependencies
+        shell: pwsh
         run: |
-          ./venv/bin/python -m pip install --upgrade pip
-          ./venv/bin/pip install -e .
-          ./venv/bin/pip install \
-            torch \
-            torchvision \
-            onnx \
-            onnxruntime \
-            onnxscript \
-            nuitka
+          & $env:PYTHON_BIN -m pip install --upgrade pip
+          & $env:PIP_BIN install -e .
+          & $env:PIP_BIN install torch torchvision onnx onnxruntime onnxscript nuitka
 
       - name: Download pretrained weights
-        run: ./venv/bin/python cutie/utils/download_models.py
+        shell: pwsh
+        run: |
+          & $env:PYTHON_BIN cutie/utils/download_models.py
 
       - name: Export ONNX models
+        shell: pwsh
         run: |
-          ./venv/bin/python -m scripts.export_onnx \
-            --output weights/cutie_image_encoder.onnx \
-            --weights weights/cutie-base-mega.pth \
-            --height 480 \
-            --width 864 \
+          & $env:PYTHON_BIN -m scripts.export_onnx `
+            --output weights/cutie_image_encoder.onnx `
+            --weights weights/cutie-base-mega.pth `
+            --height 480 `
+            --width 864 `
             --opset 18
-          ./venv/bin/python -m scripts.export_onnx_pipeline \
-            --weights weights/cutie-base-mega.pth \
-            --output-dir weights \
-            --use-dynamo \
-            --height 480 \
-            --width 864 \
-            --num-objects 1 \
+          & $env:PYTHON_BIN -m scripts.export_onnx_pipeline `
+            --weights weights/cutie-base-mega.pth `
+            --output-dir weights `
+            --use-dynamo `
+            --height 480 `
+            --width 864 `
+            --num-objects 1 `
             --memory-frames 1
-          ./venv/bin/python -m scripts.export_ritm_onnx \
-            --weights weights/coco_lvis_h18_itermask.pth \
-            --output weights/ritm_no_brs.onnx \
-            --height 480 \
-            --width 864 \
+          & $env:PYTHON_BIN -m scripts.export_ritm_onnx `
+            --weights weights/coco_lvis_h18_itermask.pth `
+            --output weights/ritm_no_brs.onnx `
+            --height 480 `
+            --width 864 `
             --opset 18
 
       - name: Build Nuitka standalone bundle
+        shell: pwsh
         run: |
-          ORT_CAPI=$(./venv/bin/python -c "import onnxruntime, pathlib; print(pathlib.Path(onnxruntime.__file__).resolve().parent / 'capi')")
+          $ortCapi = & $env:PYTHON_BIN -c "import onnxruntime, pathlib; print(pathlib.Path(onnxruntime.__file__).resolve().parent / 'capi')"
 
-          ./venv/bin/python -m nuitka interactive_demo_onnx.py \
-            --standalone \
-            --assume-yes-for-downloads \
-            --remove-output \
-            --enable-plugin=pyside6 \
-            --include-qt-plugins=platforminputcontexts \
-            --noinclude-qt-translations \
-            --nofollow-import-to=torch,torchvision,gui.main_controller,gui.click_controller,gui.interaction,gui.interactive_utils,gui.reader,gui.ritm,cutie.model,cutie.inference \
-            --include-data-dir=cutie/config=cutie/config \
-            --include-data-dir=weights=weights \
-            --include-data-files=gui/TIPS.md=gui/TIPS.md \
-            --include-data-dir="$ORT_CAPI"=onnxruntime/capi \
-            --output-dir=build_nuitka_onnx \
+          & $env:PYTHON_BIN -m nuitka interactive_demo_onnx.py `
+            --standalone `
+            --assume-yes-for-downloads `
+            --remove-output `
+            --enable-plugin=pyside6 `
+            --include-qt-plugins=platforminputcontexts `
+            --noinclude-qt-translations `
+            --nofollow-import-to=torch,torchvision,gui.main_controller,gui.click_controller,gui.interaction,gui.interactive_utils,gui.reader,gui.ritm,cutie.model,cutie.inference `
+            --include-data-dir=cutie/config=cutie/config `
+            --include-data-dir=weights=weights `
+            --include-data-files=gui/TIPS.md=gui/TIPS.md `
+            --include-data-dir="$ortCapi"=onnxruntime/capi `
+            --output-dir=build_nuitka_onnx `
             --output-filename=cutie_onnx
 
-      - name: Upload Nuitka bundle
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          if (Test-Path "${{ matrix.archive_name }}") {
+            Remove-Item "${{ matrix.archive_name }}" -Force
+          }
+          Compress-Archive -Path build_nuitka_onnx -DestinationPath "${{ matrix.archive_name }}"
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cutie-onnx-nuitka-bundle
-          path: build_nuitka_onnx
+          name: ${{ matrix.archive_name }}
+          path: ${{ matrix.archive_name }}
           if-no-files-found: error
+
+  build-arch:
+    name: Build archlinux
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build in Arch Linux container
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            archlinux:latest \
+            bash -lc '
+              set -euxo pipefail
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm \
+                base-devel \
+                git \
+                patchelf \
+                python \
+                python-pip \
+                python-virtualenv
+              python -m venv venv
+              ./venv/bin/python -m pip install --upgrade pip
+              ./venv/bin/pip install -e .
+              ./venv/bin/pip install torch torchvision onnx onnxruntime onnxscript nuitka
+              ./venv/bin/python cutie/utils/download_models.py
+              ./venv/bin/python -m scripts.export_onnx \
+                --output weights/cutie_image_encoder.onnx \
+                --weights weights/cutie-base-mega.pth \
+                --height 480 \
+                --width 864 \
+                --opset 18
+              ./venv/bin/python -m scripts.export_onnx_pipeline \
+                --weights weights/cutie-base-mega.pth \
+                --output-dir weights \
+                --use-dynamo \
+                --height 480 \
+                --width 864 \
+                --num-objects 1 \
+                --memory-frames 1
+              ./venv/bin/python -m scripts.export_ritm_onnx \
+                --weights weights/coco_lvis_h18_itermask.pth \
+                --output weights/ritm_no_brs.onnx \
+                --height 480 \
+                --width 864 \
+                --opset 18
+              ORT_CAPI=$(./venv/bin/python -c "import onnxruntime, pathlib; print(pathlib.Path(onnxruntime.__file__).resolve().parent / \"capi\")")
+              ./venv/bin/python -m nuitka interactive_demo_onnx.py \
+                --standalone \
+                --assume-yes-for-downloads \
+                --remove-output \
+                --enable-plugin=pyside6 \
+                --include-qt-plugins=platforminputcontexts \
+                --noinclude-qt-translations \
+                --nofollow-import-to=torch,torchvision,gui.main_controller,gui.click_controller,gui.interaction,gui.interactive_utils,gui.reader,gui.ritm,cutie.model,cutie.inference \
+                --include-data-dir=cutie/config=cutie/config \
+                --include-data-dir=weights=weights \
+                --include-data-files=gui/TIPS.md=gui/TIPS.md \
+                --include-data-dir="$ORT_CAPI"=onnxruntime/capi \
+                --output-dir=build_nuitka_onnx \
+                --output-filename=cutie_onnx
+            '
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          if (Test-Path cutie-onnx-nuitka-archlinux.zip) {
+            Remove-Item cutie-onnx-nuitka-archlinux.zip -Force
+          }
+          Compress-Archive -Path build_nuitka_onnx -DestinationPath cutie-onnx-nuitka-archlinux.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cutie-onnx-nuitka-archlinux.zip
+          path: cutie-onnx-nuitka-archlinux.zip
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs:
+      - build-native
+      - build-arch
+
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: cutie-onnx-nuitka-*.zip
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ inputs.release_name }}
+          prerelease: ${{ inputs.prerelease }}
+          files: release-assets/*.zip
+          generate_release_notes: true
