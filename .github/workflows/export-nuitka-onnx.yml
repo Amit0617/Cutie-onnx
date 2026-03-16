@@ -1,0 +1,93 @@
+name: Export Nuitka ONNX Bundle
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-nuitka-onnx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            patchelf
+
+      - name: Create virtual environment
+        run: python -m venv venv
+
+      - name: Install Python dependencies
+        run: |
+          ./venv/bin/python -m pip install --upgrade pip
+          ./venv/bin/pip install -e .
+          ./venv/bin/pip install \
+            torch \
+            torchvision \
+            onnx \
+            onnxruntime \
+            onnxscript \
+            nuitka
+
+      - name: Download pretrained weights
+        run: ./venv/bin/python cutie/utils/download_models.py
+
+      - name: Export ONNX models
+        run: |
+          ./venv/bin/python -m scripts.export_onnx \
+            --output weights/cutie_image_encoder.onnx \
+            --weights weights/cutie-base-mega.pth \
+            --height 480 \
+            --width 864 \
+            --opset 18
+          ./venv/bin/python -m scripts.export_onnx_pipeline \
+            --weights weights/cutie-base-mega.pth \
+            --output-dir weights \
+            --use-dynamo \
+            --height 480 \
+            --width 864 \
+            --num-objects 1 \
+            --memory-frames 1
+          ./venv/bin/python -m scripts.export_ritm_onnx \
+            --weights weights/coco_lvis_h18_itermask.pth \
+            --output weights/ritm_no_brs.onnx \
+            --height 480 \
+            --width 864 \
+            --opset 18
+
+      - name: Build Nuitka standalone bundle
+        run: |
+          ORT_CAPI=$(./venv/bin/python -c "import onnxruntime, pathlib; print(pathlib.Path(onnxruntime.__file__).resolve().parent / 'capi')")
+
+          ./venv/bin/python -m nuitka interactive_demo_onnx.py \
+            --standalone \
+            --assume-yes-for-downloads \
+            --remove-output \
+            --enable-plugin=pyside6 \
+            --include-qt-plugins=platforminputcontexts \
+            --noinclude-qt-translations \
+            --nofollow-import-to=torch,torchvision,gui.main_controller,gui.click_controller,gui.interaction,gui.interactive_utils,gui.reader,gui.ritm,cutie.model,cutie.inference \
+            --include-data-dir=cutie/config=cutie/config \
+            --include-data-dir=weights=weights \
+            --include-data-files=gui/TIPS.md=gui/TIPS.md \
+            --include-data-dir="$ORT_CAPI"=onnxruntime/capi \
+            --output-dir=build_nuitka_onnx \
+            --output-filename=cutie_onnx
+
+      - name: Upload Nuitka bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cutie-onnx-nuitka-bundle
+          path: build_nuitka_onnx
+          if-no-files-found: error
