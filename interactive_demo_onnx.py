@@ -48,6 +48,22 @@ def get_arguments():
         help="path to ONNX RITM click model",
     )
     parser.add_argument(
+        "--click_backend_model",
+        choices=["ritm", "sam2"],
+        default="sam2",
+        help="first-frame click backend: RITM or SAM2",
+    )
+    parser.add_argument(
+        "--sam2_encoder_onnx",
+        default="weights/sam2.1_hiera_small.encoder.onnx",
+        help="path to ONNX SAM2 encoder model used for click prompts",
+    )
+    parser.add_argument(
+        "--sam2_decoder_onnx",
+        default="weights/sam2.1_hiera_small.decoder.onnx",
+        help="path to ONNX SAM2 decoder model used for click prompts",
+    )
+    parser.add_argument(
         "--ritm_max_clicks",
         type=int,
         default=8,
@@ -172,7 +188,14 @@ if __name__ in "__main__":
     args.workspace = resolve_workspace(args)
 
     args_dict = vars(args)
-    for key in ("onnx_encoder", "onnx_memory_write", "onnx_read_decode", "ritm_onnx"):
+    for key in (
+        "onnx_encoder",
+        "onnx_memory_write",
+        "onnx_read_decode",
+        "ritm_onnx",
+        "sam2_encoder_onnx",
+        "sam2_decoder_onnx",
+    ):
         args_dict[key] = resolve_runtime_path(args_dict[key])
 
     with open_dict(cfg):

@@ -8,6 +8,7 @@ Reset memory if needed.
 Controls:
 
 - Use left-click for foreground annotation and right-click for background annotation.
+- With the SAM2 ONNX click backend, use shift + left-drag to draw a rectangle box prompt.
 - Use number keys or the spinbox to change the object to be operated on. If it does not respond, most likely the correct number of objects was not specified during program startup.
 - Use left/right arrows to move between frames, shift+arrow to move by 10 frames, and alt/option+arrow to move to the start/end.
 - Use F/space and B to propagate forward and backward, respectively.

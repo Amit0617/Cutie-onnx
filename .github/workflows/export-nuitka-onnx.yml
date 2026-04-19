@@ -22,12 +22,82 @@ permissions:
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: "1"
+  SAM2_SMALL_CHECKPOINT: sam2.1_hiera_small.pt
+  SAM2_SMALL_URL: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
 
 jobs:
+  export-weights:
+    name: Export shared ONNX weights
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install samexporter git+https://github.com/facebookresearch/segment-anything-2.git
+
+      - name: Download pretrained weights
+        run: |
+          python cutie/utils/download_models.py
+          mkdir -p weights
+          curl -L "$SAM2_SMALL_URL" -o "weights/$SAM2_SMALL_CHECKPOINT"
+
+      - name: Export ONNX models
+        run: |
+          python -m scripts.export_onnx \
+            --output weights/cutie_image_encoder.onnx \
+            --weights weights/cutie-base-mega.pth \
+            --height 480 \
+            --width 864 \
+            --opset 18
+          python -m scripts.export_onnx_pipeline \
+            --weights weights/cutie-base-mega.pth \
+            --output-dir weights \
+            --use-dynamo \
+            --height 480 \
+            --width 864 \
+            --num-objects 1 \
+            --memory-frames 1
+          python -m scripts.export_ritm_onnx \
+            --weights weights/coco_lvis_h18_itermask.pth \
+            --output weights/ritm_no_brs.onnx \
+            --height 480 \
+            --width 864 \
+            --opset 18
+          python -m samexporter.export_sam2 \
+            --checkpoint "weights/$SAM2_SMALL_CHECKPOINT" \
+            --output_encoder weights/sam2.1_hiera_small.encoder.onnx \
+            --output_decoder weights/sam2.1_hiera_small.decoder.onnx \
+            --model_type sam2.1_hiera_small
+
+      - name: Upload weights artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-weights
+          path: weights
+          if-no-files-found: error
   build-native:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    needs:
+      - export-weights
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +115,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Download exported weights
+        uses: actions/download-artifact@v4
+        with:
+          name: onnx-weights
+          path: .
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -76,35 +152,6 @@ jobs:
           & $env:PYTHON_BIN -m pip install --upgrade pip
           & $env:PIP_BIN install -e .
           & $env:PIP_BIN install torch torchvision onnx onnxruntime onnxscript nuitka
-
-      - name: Download pretrained weights
-        shell: pwsh
-        run: |
-          & $env:PYTHON_BIN cutie/utils/download_models.py
-
-      - name: Export ONNX models
-        shell: pwsh
-        run: |
-          & $env:PYTHON_BIN -m scripts.export_onnx `
-            --output weights/cutie_image_encoder.onnx `
-            --weights weights/cutie-base-mega.pth `
-            --height 480 `
-            --width 864 `
-            --opset 18
-          & $env:PYTHON_BIN -m scripts.export_onnx_pipeline `
-            --weights weights/cutie-base-mega.pth `
-            --output-dir weights `
-            --use-dynamo `
-            --height 480 `
-            --width 864 `
-            --num-objects 1 `
-            --memory-frames 1
-          & $env:PYTHON_BIN -m scripts.export_ritm_onnx `
-            --weights weights/coco_lvis_h18_itermask.pth `
-            --output weights/ritm_no_brs.onnx `
-            --height 480 `
-            --width 864 `
-            --opset 18
 
       - name: Build Nuitka standalone bundle
         shell: pwsh
@@ -145,10 +192,18 @@ jobs:
     name: Build archlinux
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    needs:
+      - export-weights
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Download exported weights
+        uses: actions/download-artifact@v4
+        with:
+          name: onnx-weights
+          path: .
 
       - name: Build in Arch Linux container
         run: |
@@ -170,27 +225,6 @@ jobs:
               ./venv/bin/python -m pip install --upgrade pip
               ./venv/bin/pip install -e .
               ./venv/bin/pip install torch torchvision onnx onnxruntime onnxscript nuitka
-              ./venv/bin/python cutie/utils/download_models.py
-              ./venv/bin/python -m scripts.export_onnx \
-                --output weights/cutie_image_encoder.onnx \
-                --weights weights/cutie-base-mega.pth \
-                --height 480 \
-                --width 864 \
-                --opset 18
-              ./venv/bin/python -m scripts.export_onnx_pipeline \
-                --weights weights/cutie-base-mega.pth \
-                --output-dir weights \
-                --use-dynamo \
-                --height 480 \
-                --width 864 \
-                --num-objects 1 \
-                --memory-frames 1
-              ./venv/bin/python -m scripts.export_ritm_onnx \
-                --weights weights/coco_lvis_h18_itermask.pth \
-                --output weights/ritm_no_brs.onnx \
-                --height 480 \
-                --width 864 \
-                --opset 18
               ORT_CAPI=$(./venv/bin/python -c "import onnxruntime, pathlib; print(pathlib.Path(onnxruntime.__file__).resolve().parent / \"capi\")")
               ./venv/bin/python -m nuitka interactive_demo_onnx.py \
                 --standalone \

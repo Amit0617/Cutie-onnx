@@ -23,6 +23,11 @@ class GUI(QWidget):
         # callbacks to be set by the controller
         self.on_mouse_motion_xy = None
         self.click_fn = None
+        self.box_prompt_start_fn = None
+        self.box_prompt_update_fn = None
+        self.box_prompt_end_fn = None
+        self._dragging_box_prompt = False
+        self._box_prompt_start = None
 
         self.controller = controller
         self.cfg = cfg
@@ -441,6 +446,16 @@ class GUI(QWidget):
             return
 
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            and self.box_prompt_start_fn is not None
+        ):
+            self._dragging_box_prompt = True
+            self._box_prompt_start = (ex, ey)
+            self.box_prompt_start_fn(ex, ey)
+            return
+
         if event.button() == Qt.MouseButton.LeftButton:
             action = 'left'
         elif event.button() == Qt.MouseButton.RightButton:
@@ -453,9 +468,20 @@ class GUI(QWidget):
     def on_mouse_motion(self, event):
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
         self.on_mouse_motion_xy(ex, ey)
+        if self._dragging_box_prompt and self.box_prompt_update_fn is not None:
+            self.box_prompt_update_fn(ex, ey)
 
     def on_mouse_release(self, event):
-        pass
+        if not self._dragging_box_prompt:
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        self._dragging_box_prompt = False
+        ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
+        if self.box_prompt_end_fn is not None:
+            self.box_prompt_end_fn(ex, ey)
+        self._box_prompt_start = None
 
     def on_play_video(self):
         if self.timer.isActive():

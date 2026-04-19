@@ -24,6 +24,7 @@ from .interactive_utils_numpy import (
 )
 from .onnx_inference_core_numpy import OnnxInferenceCoreNumpy
 from .reader_numpy import PropagationReaderNumpy
+from .sam2_click_controller_numpy import Sam2ClickControllerOnnxNumpy
 
 log = logging.getLogger()
 
@@ -80,6 +81,7 @@ class MainControllerOnnxNumpy:
         self.interacted_prob: np.ndarray | None = None
         self.overlay_layer: np.ndarray | None = None
         self.vis_target_objects = list(range(1, self.num_objects + 1))
+        self.temp_box_prompt: tuple[int, int, int, int] | None = None
 
         self.load_current_image_mask()
         self.show_current_frame()
@@ -96,6 +98,9 @@ class MainControllerOnnxNumpy:
 
         self.gui.on_mouse_motion_xy = self.on_mouse_motion_xy
         self.gui.click_fn = self.click_fn
+        self.gui.box_prompt_start_fn = self.on_box_prompt_start
+        self.gui.box_prompt_update_fn = self.on_box_prompt_update
+        self.gui.box_prompt_end_fn = self.on_box_prompt_end
 
         self.gui.show()
         self.gui.text("Initialized.")
@@ -106,6 +111,16 @@ class MainControllerOnnxNumpy:
         self.update_config()
 
     def initialize_networks(self) -> None:
+        backend = str(getattr(self.cfg, "click_backend_model", "ritm")).lower()
+        if backend == "sam2":
+            self.click_ctrl = Sam2ClickControllerOnnxNumpy(
+                self.cfg.sam2_encoder_onnx,
+                self.cfg.sam2_decoder_onnx,
+                device=self.device,
+            )
+            log.info("Using SAM2 ONNX click backend for initial object selection.")
+            return
+
         self.click_ctrl = ClickControllerOnnxNumpy(
             self.cfg.ritm_onnx,
             device=self.device,
@@ -113,6 +128,7 @@ class MainControllerOnnxNumpy:
             click_radius=self.cfg.ritm_click_radius,
             with_flip=True,
         )
+        log.info("Using RITM ONNX click backend for initial object selection.")
 
     def build_processor(self):
         return OnnxInferenceCoreNumpy(self.cfg)
@@ -164,9 +180,79 @@ class MainControllerOnnxNumpy:
 
         raise NotImplementedError(action)
 
+    def _sam2_box_prompt_enabled(self) -> bool:
+        return isinstance(self.click_ctrl, Sam2ClickControllerOnnxNumpy)
+
+    def _normalized_box_prompt(
+        self, x0: int | float, y0: int | float, x1: int | float, y1: int | float
+    ) -> tuple[int, int, int, int]:
+        x_min, x_max = sorted((int(round(x0)), int(round(x1))))
+        y_min, y_max = sorted((int(round(y0)), int(round(y1))))
+        return x_min, y_min, x_max, y_max
+
+    def _draw_temp_box_prompt(self, image: np.ndarray) -> np.ndarray:
+        if self.temp_box_prompt is None:
+            return image
+        x0, y0, x1, y1 = self._normalized_box_prompt(*self.temp_box_prompt)
+        preview = image.copy()
+        cv2.rectangle(preview, (x0, y0), (x1, y1), (80, 255, 80), 2)
+        return preview
+
+    def _ensure_box_interaction(self) -> ClickInteractionOnnx:
+        last_interaction = self.interaction
+        self.convert_current_image_mask_numpy()
+        image = self.curr_image_chw
+        if last_interaction is None or last_interaction.tar_obj != self.curr_object:
+            self.complete_interaction()
+            self.click_ctrl.unanchor()
+            self.interaction = ClickInteractionOnnx(
+                image,
+                self.curr_prob,
+                (self.h, self.w),
+                self.click_ctrl,
+                self.curr_object,
+            )
+        return self.interaction
+
+    def on_box_prompt_start(self, x: int, y: int):
+        if self.propagating or not self._sam2_box_prompt_enabled():
+            return
+        self.temp_box_prompt = self._normalized_box_prompt(x, y, x, y)
+        self._show_preview_frame()
+
+    def on_box_prompt_update(self, x: int, y: int):
+        if self.temp_box_prompt is None or not self._sam2_box_prompt_enabled():
+            return
+        x0, y0, _, _ = self.temp_box_prompt
+        self.temp_box_prompt = self._normalized_box_prompt(x0, y0, x, y)
+        self._show_preview_frame()
+
+    def on_box_prompt_end(self, x: int, y: int):
+        if not self._sam2_box_prompt_enabled():
+            self.temp_box_prompt = None
+            return
+        if self.propagating or self.temp_box_prompt is None:
+            self.temp_box_prompt = None
+            return
+
+        x0, y0, _, _ = self.temp_box_prompt
+        x0, y0, x1, y1 = self._normalized_box_prompt(x0, y0, x, y)
+        self.temp_box_prompt = None
+        if x1 <= x0 or y1 <= y0:
+            self.gui.text("Box prompt ignored: drag a larger rectangle.")
+            self.show_current_frame()
+            return
+
+        interaction = self._ensure_box_interaction()
+        interaction.set_box(x0, y0, x1, y1)
+        self.interacted_prob = interaction.predict()
+        self.update_interacted_mask()
+        self.update_gpu_gauges()
+
     def load_current_image_mask(self, no_mask: bool = False):
         self.curr_image_np = self.res_man.get_image(self.curr_ti)
         self.curr_image_chw = None
+        self.temp_box_prompt = None
         if not no_mask:
             loaded_mask = self.res_man.get_mask(self.curr_ti)
             if loaded_mask is None:
@@ -189,6 +275,7 @@ class MainControllerOnnxNumpy:
             self.overlay_layer,
             self.vis_target_objects,
         )
+        self.vis_image = self._draw_temp_box_prompt(self.vis_image)
 
     def update_canvas(self):
         self.gui.set_canvas(self.vis_image)
@@ -201,6 +288,7 @@ class MainControllerOnnxNumpy:
             self.overlay_layer,
             self.vis_target_objects,
         )
+        self.vis_image = self._draw_temp_box_prompt(self.vis_image)
         self.vis_image = np.ascontiguousarray(self.vis_image)
         save_visualization = self.save_visualization_mode in [
             "Propagation only (higher quality)",
@@ -222,6 +310,11 @@ class MainControllerOnnxNumpy:
             self.update_canvas()
 
         self.gui.update_slider(self.curr_ti)
+        self.gui.frame_name.setText(self.res_man.names[self.curr_ti] + ".jpg")
+
+    def _show_preview_frame(self):
+        self.compose_current_im()
+        self.update_canvas()
         self.gui.frame_name.setText(self.res_man.names[self.curr_ti] + ".jpg")
 
     def set_vis_mode(self):
@@ -390,6 +483,7 @@ class MainControllerOnnxNumpy:
     def reset_this_interaction(self):
         self.complete_interaction()
         self.interacted_prob = None
+        self.temp_box_prompt = None
         self.click_ctrl.unanchor()
 
     def on_reset_mask(self):
