@@ -6,6 +6,15 @@ on:
       tag:
         description: Git tag to create or update for this release
         required: true
+      refresh_weights:
+        description: Re-export ONNX weights instead of downloading cached ones
+        required: false
+        type: boolean
+        default: false
+      weights_tag:
+        description: Git tag that stores cached ONNX weight assets
+        required: false
+        default: onnx-weights-cache
       release_name:
         description: Release title
         required: false
@@ -30,6 +39,7 @@ env:
 jobs:
   export-sam-weights:
     name: Export SAM ONNX weights
+    if: ${{ inputs.refresh_weights }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -77,6 +87,7 @@ jobs:
 
   export-cutie-weights:
     name: Export Cutie ONNX weights
+    if: ${{ inputs.refresh_weights }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -136,13 +147,135 @@ jobs:
           name: cutie-onnx-weights
           path: weights
           if-no-files-found: error
+
+  download-sam-weights:
+    name: Download cached SAM ONNX weights
+    if: ${{ !inputs.refresh_weights }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download cached SAM weights release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p cached-sam
+          gh release download "${{ inputs.weights_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern sam-onnx-weights.zip \
+            --dir cached-sam
+
+      - name: Extract cached SAM weights
+        run: |
+          mkdir -p weights
+          unzip -o cached-sam/sam-onnx-weights.zip -d weights
+
+      - name: Upload SAM weights artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sam-onnx-weights
+          path: |
+            weights/sam2.1_hiera_small.encoder.onnx
+            weights/sam2.1_hiera_small.decoder.onnx
+          if-no-files-found: error
+
+  download-cutie-weights:
+    name: Download cached Cutie ONNX weights
+    if: ${{ !inputs.refresh_weights }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download cached Cutie weights release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p cached-cutie
+          gh release download "${{ inputs.weights_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern cutie-onnx-weights.zip \
+            --dir cached-cutie
+
+      - name: Extract cached Cutie weights
+        run: |
+          mkdir -p weights
+          unzip -o cached-cutie/cutie-onnx-weights.zip -d weights
+
+      - name: Upload Cutie weights artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cutie-onnx-weights
+          path: weights
+          if-no-files-found: error
+
+  publish-weights-cache:
+    name: Publish cached ONNX weights
+    if: ${{ inputs.refresh_weights }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - export-sam-weights
+      - export-cutie-weights
+
+    steps:
+      - name: Download Cutie weights artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cutie-onnx-weights
+          path: weights
+
+      - name: Download SAM weights artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sam-onnx-weights
+          path: weights
+
+      - name: Create weight archives
+        run: |
+          mkdir -p release-assets
+          cd weights
+          zip -r ../release-assets/cutie-onnx-weights.zip \
+            cutie-base-mega.pth \
+            coco_lvis_h18_itermask.pth \
+            cutie_image_encoder.onnx \
+            cutie_memory_write.onnx \
+            cutie_read_decode.onnx \
+            ritm_no_brs.onnx
+          zip -r ../release-assets/sam-onnx-weights.zip \
+            sam2.1_hiera_small.encoder.onnx \
+            sam2.1_hiera_small.decoder.onnx
+
+      - name: Publish cached weight assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.weights_tag }}
+          target_commitish: ${{ github.sha }}
+          name: ONNX Weights Cache
+          prerelease: true
+          files: release-assets/*.zip
+          generate_release_notes: false
   build-native:
     name: Build ${{ matrix.label }}
+    if: >-
+      ${{
+        always() &&
+        !contains(needs.*.result, 'failure') &&
+        (
+          needs.export-sam-weights.result == 'success' ||
+          needs.download-sam-weights.result == 'success'
+        ) &&
+        (
+          needs.export-cutie-weights.result == 'success' ||
+          needs.download-cutie-weights.result == 'success'
+        )
+      }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     needs:
       - export-sam-weights
       - export-cutie-weights
+      - download-sam-weights
+      - download-cutie-weights
     strategy:
       fail-fast: false
       matrix:
@@ -241,11 +374,26 @@ jobs:
 
   build-arch:
     name: Build archlinux
+    if: >-
+      ${{
+        always() &&
+        !contains(needs.*.result, 'failure') &&
+        (
+          needs.export-sam-weights.result == 'success' ||
+          needs.download-sam-weights.result == 'success'
+        ) &&
+        (
+          needs.export-cutie-weights.result == 'success' ||
+          needs.download-cutie-weights.result == 'success'
+        )
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     needs:
       - export-sam-weights
       - export-cutie-weights
+      - download-sam-weights
+      - download-cutie-weights
 
     steps:
       - name: Check out repository
@@ -279,10 +427,11 @@ jobs:
                 python \
                 python-pip \
                 python-virtualenv
-              python -m pip install --upgrade pip
-              python -m pip install uv
-              uv python install 3.10
-              uv venv --python 3.10 venv
+              python -m venv uv-bootstrap
+              ./uv-bootstrap/bin/python -m pip install --upgrade pip
+              ./uv-bootstrap/bin/pip install uv
+              ./uv-bootstrap/bin/uv python install 3.10
+              ./uv-bootstrap/bin/uv venv --python 3.10 venv
               ./venv/bin/python --version
               ./venv/bin/python -m pip install --upgrade pip
               ./venv/bin/pip install -e .
