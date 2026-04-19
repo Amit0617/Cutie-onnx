@@ -165,13 +165,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: cutie-onnx-weights
-          path: .
+          path: weights
 
       - name: Download SAM weights
         uses: actions/download-artifact@v4
         with:
           name: sam-onnx-weights
-          path: .
+          path: weights
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -255,13 +255,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: cutie-onnx-weights
-          path: .
+          path: weights
 
       - name: Download SAM weights
         uses: actions/download-artifact@v4
         with:
           name: sam-onnx-weights
-          path: .
+          path: weights
 
       - name: Build in Arch Linux container
         run: |
@@ -279,7 +279,11 @@ jobs:
                 python \
                 python-pip \
                 python-virtualenv
-              python -m venv venv
+              python -m pip install --upgrade pip
+              python -m pip install uv
+              uv python install 3.10
+              uv venv --python 3.10 venv
+              ./venv/bin/python --version
               ./venv/bin/python -m pip install --upgrade pip
               ./venv/bin/pip install -e .
               ./venv/bin/pip install torch torchvision onnx onnxruntime onnxscript nuitka
