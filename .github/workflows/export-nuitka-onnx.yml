@@ -22,12 +22,61 @@ permissions:
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: "1"
+  CUTIE_BASE_URL: https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth
+  RITM_URL: https://github.com/hkchengrex/Cutie/releases/download/v1.0/coco_lvis_h18_itermask.pth
   SAM2_SMALL_CHECKPOINT: sam2.1_hiera_small.pt
   SAM2_SMALL_URL: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
 
 jobs:
-  export-weights:
-    name: Export shared ONNX weights
+  export-sam-weights:
+    name: Export SAM ONNX weights
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install samexporter git+https://github.com/facebookresearch/segment-anything-2.git
+
+      - name: Download SAM2 checkpoint
+        run: |
+          mkdir -p weights
+          curl -L "$SAM2_SMALL_URL" -o "weights/$SAM2_SMALL_CHECKPOINT"
+
+      - name: Export SAM2 ONNX models
+        run: |
+          python -m samexporter.export_sam2 \
+            --checkpoint "weights/$SAM2_SMALL_CHECKPOINT" \
+            --output_encoder weights/sam2.1_hiera_small.encoder.onnx \
+            --output_decoder weights/sam2.1_hiera_small.decoder.onnx \
+            --model_type sam2.1_hiera_small
+
+      - name: Upload SAM weights artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sam-onnx-weights
+          path: |
+            weights/sam2.1_hiera_small.encoder.onnx
+            weights/sam2.1_hiera_small.decoder.onnx
+          if-no-files-found: error
+
+  export-cutie-weights:
+    name: Export Cutie ONNX weights
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -50,15 +99,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install samexporter git+https://github.com/facebookresearch/segment-anything-2.git
+          pip install torch torchvision onnx onnxruntime onnxscript
 
-      - name: Download pretrained weights
+      - name: Download Cutie checkpoints
         run: |
-          python cutie/utils/download_models.py
           mkdir -p weights
-          curl -L "$SAM2_SMALL_URL" -o "weights/$SAM2_SMALL_CHECKPOINT"
+          curl -L "$CUTIE_BASE_URL" -o weights/cutie-base-mega.pth
+          curl -L "$RITM_URL" -o weights/coco_lvis_h18_itermask.pth
 
-      - name: Export ONNX models
+      - name: Export Cutie ONNX models
         run: |
           python -m scripts.export_onnx \
             --output weights/cutie_image_encoder.onnx \
@@ -80,16 +129,11 @@ jobs:
             --height 480 \
             --width 864 \
             --opset 18
-          python -m samexporter.export_sam2 \
-            --checkpoint "weights/$SAM2_SMALL_CHECKPOINT" \
-            --output_encoder weights/sam2.1_hiera_small.encoder.onnx \
-            --output_decoder weights/sam2.1_hiera_small.decoder.onnx \
-            --model_type sam2.1_hiera_small
 
-      - name: Upload weights artifact
+      - name: Upload Cutie weights artifact
         uses: actions/upload-artifact@v4
         with:
-          name: onnx-weights
+          name: cutie-onnx-weights
           path: weights
           if-no-files-found: error
   build-native:
@@ -97,7 +141,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     needs:
-      - export-weights
+      - export-sam-weights
+      - export-cutie-weights
     strategy:
       fail-fast: false
       matrix:
@@ -116,10 +161,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download exported weights
+      - name: Download Cutie weights
         uses: actions/download-artifact@v4
         with:
-          name: onnx-weights
+          name: cutie-onnx-weights
+          path: .
+
+      - name: Download SAM weights
+        uses: actions/download-artifact@v4
+        with:
+          name: sam-onnx-weights
           path: .
 
       - name: Set up Python
@@ -193,16 +244,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     needs:
-      - export-weights
+      - export-sam-weights
+      - export-cutie-weights
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download exported weights
+      - name: Download Cutie weights
         uses: actions/download-artifact@v4
         with:
-          name: onnx-weights
+          name: cutie-onnx-weights
+          path: .
+
+      - name: Download SAM weights
+        uses: actions/download-artifact@v4
+        with:
+          name: sam-onnx-weights
           path: .
 
       - name: Build in Arch Linux container
