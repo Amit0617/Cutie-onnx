@@ -431,7 +431,7 @@ jobs:
               ./uv-bootstrap/bin/python -m pip install --upgrade pip
               ./uv-bootstrap/bin/pip install uv
               ./uv-bootstrap/bin/uv python install 3.10
-              ./uv-bootstrap/bin/uv venv --python 3.10 venv
+              ./uv-bootstrap/bin/uv venv --python 3.10 --seed venv
               ./venv/bin/python --version
               ./venv/bin/python -m pip install --upgrade pip
               ./venv/bin/pip install -e .
